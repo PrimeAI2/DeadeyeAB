@@ -190,7 +190,11 @@ struct Capture {
     cv::Mat latest_cropped_downscaled() {
         CVPixelBufferRef pb = sink ? sink.latest : nil;
         if(!pb) return {};
-        CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+
+        // Try to lock - if it fails, the buffer is invalid
+        CVReturn lockResult = CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+        if(lockResult != kCVReturnSuccess) return {};
+
         size_t W=CVPixelBufferGetWidth(pb), H=CVPixelBufferGetHeight(pb), stride=CVPixelBufferGetBytesPerRow(pb);
         uint8_t* base=(uint8_t*)CVPixelBufferGetBaseAddress(pb);
         if(!base){ CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly); return {}; }
