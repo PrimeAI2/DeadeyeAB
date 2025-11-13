@@ -690,16 +690,10 @@ static void show_splash_then(std::function<void()> onDone){
     play_splash_audio_once();
 
     std::vector<std::string> seq = {
-        "Initializing","Initializing.","Initializing..","Initializing...","Initializing....","Initializing....",
-        "Routing Fuser","Routing Fuser.","Routing Fuser..","Routing Fuser...","Routing Fuser....",
-        "Communicating with GPU","Communicating with GPU.","Communicating with GPU..",
-        "Success!",
-        "Hooking DMA","Hooking DMA.","Hooking DMA...","Hooking DMA...","Hooking DMA....","Hooking DMA.....",
-        "Hooking DMA......","Hooking DMA.......","Hooking DMA.........","Hooking DMA..........",
-        "Hooking DMA...........","Hooking DMA............","Hooking DMA.............",
-        "GPU partitioned and hooked. All systems are go!"
+        "Initializing","Initializing.","Initializing..","Initializing...",
+        "Starting..."
     };
-    const double total = 25.0;
+    const double total = 3.0;  // 3 seconds for testing (was 25.0)
     const double step  = total / (double)seq.size();
 
     __block size_t idx = 0;
