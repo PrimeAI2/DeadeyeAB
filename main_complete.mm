@@ -1160,9 +1160,9 @@ void start_bot_logic_timer() {
     log_line("Startup OK. Cannon holding. Starting bot logic loop...");
 
     // [v14.2] Bot logic state
-    cv::Mat debugMat(RADAR_HEIGHT, RADAR_WIDTH, CV_8UC4, cv::Scalar(0,0,0,255));
-    auto last_logic_time = std::chrono::steady_clock::now();
-    long frame_count = 0;
+    __block cv::Mat debugMat(RADAR_HEIGHT, RADAR_WIDTH, CV_8UC4, cv::Scalar(0,0,0,255));
+    __block auto last_logic_time = std::chrono::steady_clock::now();
+    __block long frame_count = 0;
 
     const double bot_fps = 45.0;
     g_bot_logic_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
