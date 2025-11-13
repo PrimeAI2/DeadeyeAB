@@ -191,13 +191,23 @@ struct Capture {
         CVPixelBufferRef pb = sink ? sink.latest : nil;
         if(!pb) return {};
 
+        // Retain the buffer to prevent it from being released while we use it
+        CFRetain(pb);
+
         // Try to lock - if it fails, the buffer is invalid
         CVReturn lockResult = CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
-        if(lockResult != kCVReturnSuccess) return {};
+        if(lockResult != kCVReturnSuccess) {
+            CFRelease(pb);
+            return {};
+        }
 
         size_t W=CVPixelBufferGetWidth(pb), H=CVPixelBufferGetHeight(pb), stride=CVPixelBufferGetBytesPerRow(pb);
         uint8_t* base=(uint8_t*)CVPixelBufferGetBaseAddress(pb);
-        if(!base){ CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly); return {}; }
+        if(!base){
+            CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+            CFRelease(pb);
+            return {};
+        }
         cv::Mat bgra((int)H,(int)W,CV_8UC4,base,stride);
 
         CGRect r=g_windowRect; // TOP-left coordinate rect
@@ -208,6 +218,8 @@ struct Capture {
         cv::Mat crop;
         if (cw>1 && ch>1) crop = bgra(cv::Rect(x,y,cw,ch)).clone();
         CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+        CFRelease(pb);
+
         if (crop.empty()) return {};
         cv::Mat bgr; cv::cvtColor(crop,bgr,cv::COLOR_BGRA2BGR);
         cv::resize(bgr,bgr,cv::Size(RADAR_WIDTH,RADAR_HEIGHT),0,0,cv::INTER_LINEAR);
@@ -624,14 +636,20 @@ static void play_splash_audio_once() {
 static void show_splash_then(std::function<void()> onDone){
     std::cout << "[SPLASH] showing splash\n";
     NSScreen* mainScr = NSScreen.mainScreen;
-    const CGFloat W = mainScr.frame.size.width;
-    const CGFloat H = mainScr.frame.size.height;
+    const CGFloat screenW = mainScr.frame.size.width;
+    const CGFloat screenH = mainScr.frame.size.height;
+
+    // Make splash half the screen size and center it
+    const CGFloat W = screenW / 2.0;
+    const CGFloat H = screenH / 2.0;
+    const CGFloat X = mainScr.frame.origin.x + (screenW - W) / 2.0;
+    const CGFloat Y = mainScr.frame.origin.y + (screenH - H) / 2.0;
 
     NSData* splashData = [NSData dataWithBytesNoCopy:(void*)splash_png length:splash_png_len freeWhenDone:NO];
     g_splashArt = [[NSImage alloc] initWithData:splashData];
 
     g_splashWin = [[DeadeyeSplash alloc]
-        initWithContentRect:NSMakeRect(mainScr.frame.origin.x, mainScr.frame.origin.y, W, H)
+        initWithContentRect:NSMakeRect(X, Y, W, H)
                   styleMask:NSWindowStyleMaskBorderless
                     backing:NSBackingStoreBuffered
                       defer:NO];
@@ -767,14 +785,30 @@ static std::vector<ButtonCand> find_orange_buttons(const cv::Mat& bgr){
     cv::Mat hsv,mask; cv::cvtColor(bgr,hsv,cv::COLOR_BGR2HSV);
     cv::inRange(hsv, ORANGE_LOW, ORANGE_HIGH, mask); // Use v14.2's ORANGE
     cv::morphologyEx(mask,mask,cv::MORPH_CLOSE,cv::getStructuringElement(cv::MORPH_RECT, cv::Size(9,9)));
-    std::vector<std::vector<cv::Point>> cnt; cv::findContours(mask,cnt,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_SIMPLE);
+
+    // Only look at the right 40% of the screen where buttons are
+    int rightStart = (int)(bgr.cols * 0.60);
+    cv::Rect rightROI(rightStart, 0, bgr.cols - rightStart, bgr.rows);
+    cv::Mat maskRight = mask(rightROI);
+
+    std::vector<std::vector<cv::Point>> cnt; cv::findContours(maskRight,cnt,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_SIMPLE);
     for(const auto& c: cnt){
-        double a=cv::contourArea(c); if(a<800) continue;
+        double a=cv::contourArea(c); if(a<200) continue; // Lower threshold for smaller buttons
         cv::Rect r=cv::boundingRect(c);
-        if(r.width > bgr.cols*0.9 || r.height > bgr.rows*0.4) continue;
+        // Adjust rect coordinates back to full frame
+        r.x += rightStart;
+
+        // Filter out buttons that are too wide or too tall
+        if(r.width > bgr.cols*0.3 || r.height > bgr.rows*0.2) continue;
+
+        std::cout << "[BUTTON] Found candidate at (" << r.x << "," << r.y << ") size=" << r.width << "x" << r.height << " area=" << a << "\n";
         out.push_back({r, cv::Point(r.x+r.width/2, r.y+r.height/2), a});
     }
     std::sort(out.begin(),out.end(),[](auto&A,auto&B){return A.c.y < B.c.y;}); // top→bottom
+    std::cout << "[BUTTON] Total buttons found: " << out.size() << "\n";
+    if(out.size() >= 2) {
+        std::cout << "[BUTTON] Second button (target): (" << out[1].r.x << "," << out[1].r.y << ") size=" << out[1].r.width << "x" << out[1].r.height << "\n";
+    }
     return out;
 }
 
