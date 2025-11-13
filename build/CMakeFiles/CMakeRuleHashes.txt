@@ -1,0 +1,5 @@
+# Hashes of file build rules.
+3b63f81127ef4c3adca75c68cc97fb89 CMakeFiles/embed_assets
+631a216ef735d71aac22f678d455e4a8 generated/bodies_wav.h
+608ff4aa57ee816ad93fb940328a4705 generated/overlay_png.h
+7e711f66e68ee4eab1c032f3127890a9 generated/splash_png.h
