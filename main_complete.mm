@@ -779,30 +779,14 @@ static std::vector<ButtonCand> find_orange_buttons(const cv::Mat& bgr){
     cv::Mat hsv,mask; cv::cvtColor(bgr,hsv,cv::COLOR_BGR2HSV);
     cv::inRange(hsv, ORANGE_LOW, ORANGE_HIGH, mask); // Use v14.2's ORANGE
     cv::morphologyEx(mask,mask,cv::MORPH_CLOSE,cv::getStructuringElement(cv::MORPH_RECT, cv::Size(9,9)));
-
-    // Only look at the right 40% of the screen where buttons are
-    int rightStart = (int)(bgr.cols * 0.60);
-    cv::Rect rightROI(rightStart, 0, bgr.cols - rightStart, bgr.rows);
-    cv::Mat maskRight = mask(rightROI);
-
-    std::vector<std::vector<cv::Point>> cnt; cv::findContours(maskRight,cnt,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_SIMPLE);
+    std::vector<std::vector<cv::Point>> cnt; cv::findContours(mask,cnt,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_SIMPLE);
     for(const auto& c: cnt){
-        double a=cv::contourArea(c); if(a<200) continue; // Lower threshold for smaller buttons
+        double a=cv::contourArea(c); if(a<800) continue;
         cv::Rect r=cv::boundingRect(c);
-        // Adjust rect coordinates back to full frame
-        r.x += rightStart;
-
-        // Filter out buttons that are too wide or too tall
-        if(r.width > bgr.cols*0.3 || r.height > bgr.rows*0.2) continue;
-
-        std::cout << "[BUTTON] Found candidate at (" << r.x << "," << r.y << ") size=" << r.width << "x" << r.height << " area=" << a << "\n";
+        if(r.width > bgr.cols*0.9 || r.height > bgr.rows*0.4) continue;
         out.push_back({r, cv::Point(r.x+r.width/2, r.y+r.height/2), a});
     }
     std::sort(out.begin(),out.end(),[](auto&A,auto&B){return A.c.y < B.c.y;}); // top→bottom
-    std::cout << "[BUTTON] Total buttons found: " << out.size() << "\n";
-    if(out.size() >= 2) {
-        std::cout << "[BUTTON] Second button (target): (" << out[1].r.x << "," << out[1].r.y << ") size=" << out[1].r.width << "x" << out[1].r.height << "\n";
-    }
     return out;
 }
 
