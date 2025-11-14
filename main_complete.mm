@@ -775,18 +775,47 @@ id<MTLTexture> cv_to_texture(const cv::Mat& bgr){
 struct ButtonCand{ cv::Rect r; cv::Point c; double area; };
 
 static std::vector<ButtonCand> find_orange_buttons(const cv::Mat& bgr){
-    std::vector<ButtonCand> out; if(bgr.empty()) return out;
-    cv::Mat hsv,mask; cv::cvtColor(bgr,hsv,cv::COLOR_BGR2HSV);
-    cv::inRange(hsv, ORANGE_LOW, ORANGE_HIGH, mask); // Use v14.2's ORANGE
-    cv::morphologyEx(mask,mask,cv::MORPH_CLOSE,cv::getStructuringElement(cv::MORPH_RECT, cv::Size(9,9)));
-    std::vector<std::vector<cv::Point>> cnt; cv::findContours(mask,cnt,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_SIMPLE);
-    for(const auto& c: cnt){
-        double a=cv::contourArea(c); if(a<800) continue;
-        cv::Rect r=cv::boundingRect(c);
-        if(r.width > bgr.cols*0.9 || r.height > bgr.rows*0.4) continue;
-        out.push_back({r, cv::Point(r.x+r.width/2, r.y+r.height/2), a});
+    std::vector<ButtonCand> out;
+    if (bgr.empty()) return out;
+
+    cv::Mat hsv, mask;
+    cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
+    cv::inRange(hsv, ORANGE_LOW, ORANGE_HIGH, mask);
+
+    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE,
+                     cv::getStructuringElement(cv::MORPH_RECT,
+                                               cv::Size(9,9)));
+
+    std::vector<std::vector<cv::Point>> cnt;
+    cv::findContours(mask, cnt, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    const int W = bgr.cols;
+    const int H = bgr.rows;
+
+    for (const auto& c : cnt) {
+        double area = cv::contourArea(c);
+        if (area < 1000.0) continue;  // too small
+
+        cv::Rect r = cv::boundingRect(c);
+        cv::Point center(r.x + r.width/2, r.y + r.height/2);
+
+        if (r.width  > W * 0.6)  continue;
+        if (r.height > H * 0.25) continue;
+
+        // Right-hand side of the phone: Play buttons live here
+        if (center.x < W * 0.65) continue;
+
+        float aspect = static_cast<float>(r.width) /
+                       std::max(1, r.height);
+        if (aspect < 1.8f || aspect > 5.0f) continue;
+
+        out.push_back({r, center, area});
     }
-    std::sort(out.begin(),out.end(),[](auto&A,auto&B){return A.c.y < B.c.y;}); // top→bottom
+
+    std::sort(out.begin(), out.end(),
+              [](const ButtonCand& A, const ButtonCand& B){
+                  return A.c.y < B.c.y;  // top → bottom
+              });
     return out;
 }
 
