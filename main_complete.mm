@@ -913,12 +913,13 @@ void check_bullet_hits(){
             if(bb.overlaps(r.get_collision_box())){ 
                 r.hp--; 
                 b.active=false;
-                if(r.hp<=0){ 
-                    g_last_destroyed_hp=r.original_hp; 
-                    if(r.original_hp>15 && !r.is_split_child){ 
-                        g_pending_split_children=2; 
-                        g_split_child_hp=r.original_hp/2; 
-                    } 
+                if(r.hp<=0){
+                    g_last_destroyed_hp=r.original_hp;
+                    // Split logic: Large and Medium rocks split, Small rocks don't
+                    if((r.size == RockSize::LARGE || r.size == RockSize::MEDIUM) && !r.is_split_child){
+                        g_pending_split_children=2;
+                        g_split_child_hp=r.original_hp/2;
+                    }
                 }
                 break;
             }
@@ -926,23 +927,56 @@ void check_bullet_hits(){
     }
 }
 
+// Helper: Determine rock size from bounding box
+RockSize getRockSize(const cv::Rect& bbox) {
+    int size = std::max(bbox.width, bbox.height);
+    if (size < 100) {
+        return RockSize::SMALL;      // ~50px
+    } else if (size < 215) {
+        return RockSize::MEDIUM;     // ~175px
+    } else {
+        return RockSize::LARGE;      // ~250px
+    }
+}
+
 void update_rock_database(cv::Mat& radar,double ts,float dt){
-    std::vector<cv::Mat> ch(4); cv::split(radar,ch); 
+    std::vector<cv::Mat> ch(4); cv::split(radar,ch);
     cv::Mat red=ch[2], green=ch[1];
-    std::vector<std::vector<cv::Point>> cont; 
+    std::vector<std::vector<cv::Point>> cont;
     cv::findContours(red,cont,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_SIMPLE);
-    
+
     std::vector<RockState> det;
     for(const auto& c: cont){
-        if(cv::contourArea(c)<10) continue;
+        double area = cv::contourArea(c);
+
+        // Filter 1: Area must be at least 1000px (small rock ~2500px)
+        if(area < 1000.0) continue;
+
+        // Filter 2: Area can't be huge (large rock ~62500px, add margin)
+        if(area > 70000.0) continue;
+
         cv::Rect bb=cv::boundingRect(c);
+
+        // Filter 3: Bounding box size must be reasonable (30-300px)
+        int maxDim = std::max(bb.width, bb.height);
+        if(maxDim < 30 || maxDim > 300) continue;
+
+        // Filter 4: Must be roughly square (aspect ratio 0.5 to 2.0)
+        float aspect = static_cast<float>(bb.width) / std::max(1, bb.height);
+        if(aspect < 0.5f || aspect > 2.0f) continue;
+
+        // Filter 5: Ignore things near cannon level (Y > 580)
         cv::Point2f center(bb.x+bb.width/2.0f, bb.y+bb.height/2.0f);
+        if(center.y > 580.0f) continue;
+
+        // Passed all filters - this is a real rock
         int hpix=cv::countNonZero(green(bb));
-        RockState d; 
-        d.bbox=bb; 
-        d.center=center; 
-        d.last_seen=ts; 
-        d.hp=(hpix>5)? g_last_destroyed_hp+1 : 1; 
+        RockState d;
+        d.bbox=bb;
+        d.center=center;
+        d.last_seen=ts;
+        d.hp=(hpix>5)? g_last_destroyed_hp+1 : 1;
+        d.size = getRockSize(bb);  // Classify size
         det.push_back(d);
     }
     
@@ -968,11 +1002,12 @@ void update_rock_database(cv::Mat& radar,double ts,float dt){
             } else {
                 r.velocity=o.velocity;
             }
-            r.id=o.id; 
-            r.hp=o.hp; 
-            r.original_hp=o.original_hp; 
-            r.is_tracked=true; 
+            r.id=o.id;
+            r.hp=o.hp;
+            r.original_hp=o.original_hp;
+            r.is_tracked=true;
             r.is_split_child=o.is_split_child;
+            // Note: r.size was already set by getRockSize() above, keep the fresh measurement
             r.type=(r.center.y < FALLING_THRESHOLD_Y)? 
                    RockState::Type::FALLING : 
                    (r.center.y >= CANNON_GROUND_Y-30? RockState::Type::LANDED : RockState::Type::FALLING);
