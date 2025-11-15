@@ -831,45 +831,57 @@ void fire_bullet(float cx,double ts){
 }
 
 TrajectoryPrediction predict_full_trajectory(const RockState& r){
-    TrajectoryPrediction pred; 
-    float x=r.center.x, y=r.center.y, vx=r.velocity.x, vy=r.velocity.y; 
-    const float dt=1.0f/60.0f, T=10.0f; 
-    float t=0.0f; 
-    pred.min_x=x; pred.max_x=x; 
+    TrajectoryPrediction pred;
+    float x=r.center.x, y=r.center.y, vx=r.velocity.x, vy=r.velocity.y;
+    const float dt=1.0f/60.0f, T=10.0f;
+    float t=0.0f;
+    pred.min_x=x; pred.max_x=x;
     int b=0, B=50;
-    
+    int frame_count = 0;
+    const int MAX_FRAMES_120 = 120; // 2 seconds at 60fps
+
+    // Store initial position
+    pred.future_path_120.push_back(cv::Point2f(x, y));
+    frame_count++;
+
     while(t<T && b<B){
-        vy+=GRAVITY*dt; 
-        x+=vx*dt; 
-        y+=vy*dt; 
-        pred.min_x=std::min(pred.min_x,x); 
+        vy+=GRAVITY*dt;
+        x+=vx*dt;
+        y+=vy*dt;
+        pred.min_x=std::min(pred.min_x,x);
         pred.max_x=std::max(pred.max_x,x);
-        
-        if(x<=0.0f){ 
-            x=0.0f; 
-            vx=std::abs(vx)*ROCK_BOUNCE_DAMPING; 
-            pred.bounces.push_back({x,y,t,BouncePoint::WALL_LEFT}); 
-            b++; 
+
+        // *** v17.48: Store position for first 120 frames (2 seconds) ***
+        if (frame_count < MAX_FRAMES_120) {
+            pred.future_path_120.push_back(cv::Point2f(x, y));
+            frame_count++;
         }
-        if(x>=RADAR_WIDTH){ 
-            x=RADAR_WIDTH; 
-            vx=-std::abs(vx)*ROCK_BOUNCE_DAMPING; 
-            pred.bounces.push_back({x,y,t,BouncePoint::WALL_RIGHT}); 
-            b++; 
+
+        if(x<=0.0f){
+            x=0.0f;
+            vx=std::abs(vx)*ROCK_BOUNCE_DAMPING;
+            pred.bounces.push_back({x,y,t,BouncePoint::WALL_LEFT});
+            b++;
         }
-        if(y>=CANNON_GROUND_Y){ 
-            y=CANNON_GROUND_Y; 
-            vy=-std::abs(vy)*ROCK_BOUNCE_DAMPING; 
-            pred.bounces.push_back({x,y,t,BouncePoint::GROUND}); 
-            pred.ground_crossings.push_back({t,x}); 
-            b++; 
-            if(std::abs(vy)<10.0f){ 
-                pred.is_stable=true; 
-                break; 
-            } 
+        if(x>=RADAR_WIDTH){
+            x=RADAR_WIDTH;
+            vx=-std::abs(vx)*ROCK_BOUNCE_DAMPING;
+            pred.bounces.push_back({x,y,t,BouncePoint::WALL_RIGHT});
+            b++;
+        }
+        if(y>=CANNON_GROUND_Y){
+            y=CANNON_GROUND_Y;
+            vy=-std::abs(vy)*ROCK_BOUNCE_DAMPING;
+            pred.bounces.push_back({x,y,t,BouncePoint::GROUND});
+            pred.ground_crossings.push_back({t,x});
+            b++;
+            if(std::abs(vy)<10.0f){
+                pred.is_stable=true;
+                break;
+            }
         }
         t+=dt;
-    } 
+    }
     return pred;
 }
 

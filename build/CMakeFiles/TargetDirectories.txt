@@ -1,4 +1,0 @@
-/Users/victownsend/Desktop/DeadeyeBot/build/CMakeFiles/embed_assets.dir
-/Users/victownsend/Desktop/DeadeyeBot/build/CMakeFiles/DeadeyeBot.dir
-/Users/victownsend/Desktop/DeadeyeBot/build/CMakeFiles/edit_cache.dir
-/Users/victownsend/Desktop/DeadeyeBot/build/CMakeFiles/rebuild_cache.dir
