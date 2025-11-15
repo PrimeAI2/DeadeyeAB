@@ -627,30 +627,41 @@ static void play_splash_audio_once() {
 
 static void show_splash_then(std::function<void()> onDone){
     std::cout << "[SPLASH] showing splash\n";
-    NSScreen* mainScr = NSScreen.mainScreen;
-    const CGFloat W = mainScr.frame.size.width;
-    const CGFloat H = mainScr.frame.size.height;
 
     NSData* splashData = [NSData dataWithBytesNoCopy:(void*)splash_png length:splash_png_len freeWhenDone:NO];
     g_splashArt = [[NSImage alloc] initWithData:splashData];
+    if (!g_splashArt) {
+        std::cerr << "FATAL: Could not load splash_png\n";
+        onDone();
+        return;
+    }
+
+    // Make splash about half the image size (not full screen!)
+    const CGFloat W = g_splashArt.size.width * 0.5;
+    const CGFloat H = g_splashArt.size.height * 0.5;
+    NSRect contentRect = NSMakeRect(0, 0, W, H);
 
     g_splashWin = [[DeadeyeSplash alloc]
-        initWithContentRect:NSMakeRect(mainScr.frame.origin.x, mainScr.frame.origin.y, W, H)
+        initWithContentRect:contentRect
                   styleMask:NSWindowStyleMaskBorderless
                     backing:NSBackingStoreBuffered
                       defer:NO];
+    [g_splashWin center];
+
     g_splashWin.opaque = YES;
     g_splashWin.backgroundColor = NSColor.blackColor;
     g_splashWin.level = NSStatusWindowLevel;
     g_splashWin.ignoresMouseEvents = YES;
     g_splashWin.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces;
 
-    NSView* content = [[NSView alloc] initWithFrame:NSMakeRect(0,0,W,H)];
+    NSView* content = [[NSView alloc] initWithFrame:contentRect];
     [g_splashWin setContentView:content];
 
     const CGFloat statusBarHeight = 80.0;
+    CGFloat artHeight = H - statusBarHeight;
+    CGFloat artWidth = W;
 
-    g_splashArtView = [[NSImageView alloc] initWithFrame:NSMakeRect(0, statusBarHeight, W, H - statusBarHeight)];
+    g_splashArtView = [[NSImageView alloc] initWithFrame:NSMakeRect(0, statusBarHeight, artWidth, artHeight)];
     g_splashArtView.imageScaling = NSImageScaleProportionallyUpOrDown;
     g_splashArtView.imageAlignment = NSImageAlignCenter;
     g_splashArtView.wantsLayer = YES;
@@ -1279,7 +1290,19 @@ void start_startup_sequence_timer() {
             
             if (g_startupState == StartupState::LookingForButton) {
                 auto btns = find_orange_buttons(f);
-                debug_draw_and_show(cv::Mat(), "Looking for 'Play' (2nd)...");
+
+                // VISUALIZE all buttons so user can see what's detected
+                cv::Mat vis = f.clone();
+                for (size_t i = 0; i < btns.size(); ++i) {
+                    const auto& b = btns[i];
+                    cv::Scalar color = (i == 1) ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 0, 255); // Green for target, magenta for others
+                    cv::rectangle(vis, b.r, color, 2);
+                    std::string label = "BTN[" + std::to_string(i) + "]";
+                    if (i == 1) label += " <- TARGET";
+                    cv::putText(vis, label, cv::Point(b.r.x, b.r.y - 5),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv::LINE_AA);
+                }
+                debug_draw_and_show(vis, "Looking for BTN[1] (2nd button)...");
 
                 if (btns.size() >= 2) {
                     g_foundButtonRect = btns[1].r;  // Get and save the second button
@@ -1306,6 +1329,17 @@ void start_startup_sequence_timer() {
                 if (nowSec() < g_startupRetryCheckTime) return; // Wait for retry time to elapse
 
                 auto buttons2 = find_orange_buttons(f);
+
+                // VISUALIZE to see if button is still there
+                cv::Mat vis2 = f.clone();
+                for (size_t i = 0; i < buttons2.size(); ++i) {
+                    cv::rectangle(vis2, buttons2[i].r, cv::Scalar(0, 255, 255), 2);
+                    cv::putText(vis2, "BTN[" + std::to_string(i) + "]",
+                                cv::Point(buttons2[i].r.x, buttons2[i].r.y - 5),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+                }
+                debug_draw_and_show(vis2, "Checking if button disappeared...");
+
                 bool still_there = false;
                 if(buttons2.size() >= 2) {
                     std::sort(buttons2.begin(), buttons2.end(), [](auto&A,auto&B){return A.c.y < B.c.y;});
