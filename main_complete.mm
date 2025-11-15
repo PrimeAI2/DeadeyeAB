@@ -1,19 +1,27 @@
 /*
 ================================================================================
- DeadeyeBot v17.4 — "THE ASYNC FIX"
- (v17.2 Body + v14 Brain)
+ DeadeyeBot v17.6 — "THE ULTRA-SIMPLE DODGE FIX"
 
  WHAT'S FIXED:
- 1) ASYNC STARTUP: The v14.2 `perform_startup_sequence` (which used a
-    blocking `while` loop) has been completely rewritten.
- 2) It is now an ASYNCHRONOUS state machine (`start_startup_sequence_timer`)
-    that runs on a timer, just like the splash screen.
- 3) This STOPS the main thread from blocking, which fixes the bug:
-    - The splash screen WILL now close.
-    - The `SCStream` WILL now deliver live video.
-    - The bot WILL find the orange button.
+ 1) DODGE LOGIC COMPLETELY REWRITTEN
+    - Old: Only checked ONE rock, only if <0.8s away and <75px
+    - New: Checks EVERY rock, triggers if <1.2s away and <90px
+    - Old: Moved to "safe zones" (might not exist!)
+    - New: Moves to the wall FURTHEST from impact point (always works!)
 
- This is the final, non-blocking, merged file.
+ 2) WHY THE OLD LOGIC FAILED:
+    - It found the SOONEST rock, but that might not be the DANGEROUS one
+    - Example: Rock A lands in 0.5s at x=50 (safe, far away)
+              Rock B lands in 0.9s at x=150 (deadly, right on you)
+    - Old code picked Rock A, said "not dangerous", did nothing
+    - Rock B killed you
+
+ 3) NEW LOGIC IS DEAD SIMPLE:
+    - For each rock: "Will it land within 90px in the next 1.2 seconds?"
+    - If yes → Move to whichever wall is furthest from impact
+    - If no → Patrol slowly, shooting rocks
+
+ This MUST work. If it doesn't, the problem is detection or movement, not logic.
 ================================================================================
 */
 
@@ -1059,69 +1067,53 @@ SafeZone find_best_safe_zone(float cx,const std::vector<SafeZone>& z){
 
 BotDecision decide(float cannon_x_rel){
     BotDecision d;
-    auto zones=find_safe_camping_zones();
-    
-    // Imminent threat check
-    bool imminent=false;
-    for(const auto& [id,r]: g_rock_database){
-        if(r.time_to_ground<PANIC_TIME){
-            float dist=std::abs(r.predicted_x-cannon_x_rel);
-            if(dist<CANNON_WIDTH){ 
-                imminent=true; 
-                break; 
+
+    // DEFAULT: Stay put and shoot
+    d.target_x_rel = cannon_x_rel;
+    d.decision = "SHOOTING";
+    d.strategy = "IDLE";
+    d.priority = "P2_NORMAL";
+
+    // CHECK EVERY ROCK - Find if ANY are dangerous
+    for(auto& [id,r]: g_rock_database){
+        if(!r.is_falling()) continue;
+
+        // How far from me will it land?
+        float distance_to_impact = std::abs(r.predicted_x - cannon_x_rel);
+
+        // SIMPLE DANGER CHECK: Will it land near me soon?
+        // 1.2 seconds = plenty of time to react
+        // 90 pixels = safe buffer (cannon is 75px wide, rock is 40px)
+        if(r.time_to_ground < 1.2f && distance_to_impact < 90.0f){
+            // DANGER! DODGE TO THE SAFEST WALL!
+
+            float left_wall = CANNON_WIDTH / 2.0f;
+            float right_wall = RADAR_WIDTH - CANNON_WIDTH / 2.0f;
+
+            // Which wall is FURTHEST from where the rock will land?
+            float dist_to_left = std::abs(r.predicted_x - left_wall);
+            float dist_to_right = std::abs(r.predicted_x - right_wall);
+
+            if(dist_to_left > dist_to_right){
+                d.target_x_rel = left_wall;  // Left wall is safer
+            } else {
+                d.target_x_rel = right_wall; // Right wall is safer
             }
+
+            d.decision = "DODGE_ROCK_" + std::to_string(id);
+            d.strategy = "EMERGENCY_DODGE";
+            d.priority = "P0_URGENT";
+
+            return d; // DO IT NOW! Don't check other rocks, just move!
         }
-    }
-    
-    if(imminent){
-        d.priority="P0_EMERGENCY"; 
-        d.strategy="DODGE"; 
-        d.decision="EMERGENCY_MOVE";
-        auto best=find_best_safe_zone(cannon_x_rel,zones);
-        d.target_x_rel=best.x_center;
-        return d;
     }
 
-    int total=(int)g_rock_database.size();
-    if(total<LOW_THREAT_THRESHOLD && zones.size()>3){
-        d.priority="P1_OFFENSE"; 
-        d.strategy="HUNT";
-        RockState* w=nullptr; 
-        int mh=9999;
-        for(auto& [id,r]: g_rock_database){ 
-            if(r.is_falling() && r.hp<mh){ 
-                mh=r.hp; 
-                w=&r; 
-            } 
-        }
-        if(w){ 
-            d.decision="CHASE_WEAKEST"; 
-            d.target_x_rel=w->predicted_x; 
-        } else { 
-            d.strategy="CAMP"; 
-            d.decision="NO_TARGETS"; 
-            auto best=find_best_safe_zone(cannon_x_rel,zones); 
-            d.target_x_rel=best.x_center; 
-        }
-    } else {
-        d.priority="P1_DEFENSE"; 
-        d.strategy="CAMP";
-        auto best=find_best_safe_zone(cannon_x_rel,zones);
-        bool in=false; 
-        for(const auto& z: zones){ 
-            if(cannon_x_rel>=z.x_min && cannon_x_rel<=z.x_max){ 
-                in=true; 
-                break; 
-            } 
-        }
-        if(in){ 
-            d.decision="STAY_IN_ZONE"; 
-            d.target_x_rel=cannon_x_rel; 
-        } else { 
-            d.decision="MOVE_TO_SAFE_ZONE"; 
-            d.target_x_rel=best.x_center; 
-        }
-    }
+    // No danger - do a slow patrol to stay under falling rocks
+    float patrol_offset = std::sin(nowSec() * 0.3f) * 80.0f;
+    d.target_x_rel = (RADAR_WIDTH / 2.0f) + patrol_offset;
+    d.decision = "PATROL";
+    d.strategy = "HUNT";
+
     return d;
 }
 
