@@ -831,13 +831,22 @@ void fire_bullet(float cx,double ts){
 }
 
 TrajectoryPrediction predict_full_trajectory(const RockState& r){
-    TrajectoryPrediction pred; 
-    float x=r.center.x, y=r.center.y, vx=r.velocity.x, vy=r.velocity.y; 
-    const float dt=1.0f/60.0f, T=10.0f; 
-    float t=0.0f; 
-    pred.min_x=x; pred.max_x=x; 
+    TrajectoryPrediction pred;
+    float x=r.center.x, y=r.center.y, vx=r.velocity.x, vy=r.velocity.y;
+    const float dt=1.0f/60.0f, T=10.0f;
+    float t=0.0f;
+    pred.min_x=x; pred.max_x=x;
     int b=0, B=50;
-    
+
+    // CRITICAL FIX: If rock is already at/near ground level, record immediate ground crossing!
+    // Rocks bounce - they don't "land". A rock AT ground level is a collision hazard.
+    if(y >= CANNON_GROUND_Y){
+        pred.bounces.push_back({x,y,t,BouncePoint::GROUND});
+        pred.ground_crossings.push_back({t,x});
+        // Note: Don't increment bounce counter 'b' here, as this is the initial state
+        // The simulation loop will handle subsequent bounces
+    }
+
     while(t<T && b<B){
         vy+=GRAVITY*dt; 
         x+=vx*dt; 
