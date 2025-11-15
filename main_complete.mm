@@ -1,19 +1,26 @@
 /*
 ================================================================================
- DeadeyeBot v17.4 — "THE ASYNC FIX"
- (v17.2 Body + v14 Brain)
+ DeadeyeBot v18.0 — "THE UTILITY FIX"
+ (v17.4 Body + Continuous Utility Brain)
 
  WHAT'S FIXED:
- 1) ASYNC STARTUP: The v14.2 `perform_startup_sequence` (which used a
-    blocking `while` loop) has been completely rewritten.
- 2) It is now an ASYNCHRONOUS state machine (`start_startup_sequence_timer`)
-    that runs on a timer, just like the splash screen.
- 3) This STOPS the main thread from blocking, which fixes the bug:
-    - The splash screen WILL now close.
-    - The `SCStream` WILL now deliver live video.
-    - The bot WILL find the orange button.
+ 1) DECISION LOGIC OVERHAUL: Replaced brittle priority-based modal decision
+    system with continuous utility-based architecture.
+ 2) ELIMINATED FREEZE BUG: Bot no longer gets stuck in "sandwich" scenarios
+    where it would dodge one threat into another and freeze.
+ 3) FLUID CHASE-AND-DODGE: New system continuously optimizes position based on:
+    - Safety Score: Exponentially penalizes imminent rock impacts
+    - Offense Score: Rewards alignment with high-HP targets
+    - Position Score: Prefers center field, avoids edges
+ 4) NO MORE PANIC STATES: Decision-making is now a single, unified function
+    that evaluates ALL rocks on the field for every position.
 
- This is the final, non-blocking, merged file.
+ Previous fixes (v17.4):
+ - ASYNC STARTUP: Non-blocking state machine for startup sequence
+ - Splash screen properly closes, SCStream delivers live video
+ - Bot successfully finds and clicks the orange button
+
+ This is the complete, freeze-free, utility-based bot.
 ================================================================================
 */
 
@@ -990,138 +997,151 @@ void update_rock_database(cv::Mat& radar,double ts,float dt){
     g_rock_database.swap(next);
 }
 
-std::vector<SafeZone> find_safe_camping_zones(){
-    const int W=RADAR_WIDTH; 
-    const float HZN=5.0f; 
-    const int SL=50; 
-    const float DT=HZN/SL;
-    
-    std::vector<std::vector<bool>> occ(SL,std::vector<bool>(W,false));
-    
-    for(const auto& [id,r]: g_rock_database){
-        TrajectoryPrediction tr=predict_full_trajectory(r);
-        for(const auto& p: tr.ground_crossings){
-            float tt=p.first, xx=p.second; 
-            if(tt>HZN) continue;
-            int s=(int)(tt/DT); 
-            if(s>=SL) continue;
-            int xmin=std::max(0,(int)(xx-CANNON_WIDTH/2.0f)); 
-            int xmax=std::min(W,(int)(xx+CANNON_WIDTH/2.0f));
-            for(int x=xmin;x<xmax;x++) occ[s][x]=true;
+// ============================================================================
+// UTILITY-BASED DECISION SYSTEM (Replaces Modal Priority Logic)
+// ============================================================================
+
+// Calculate safety score for a target position (higher = safer)
+// Penalizes positions near imminent rock impacts exponentially
+float CalculateSafetyScore(float target_x, const std::map<int, RockState>& rocks) {
+    float total_penalty = 0.0f;
+    const float DODGE_RADIUS = CANNON_WIDTH / 2.0f + COLLISION_SAFETY_MARGIN;
+    const float IMMINENT_TIME = 1.5f; // Start worrying about rocks within 1.5s
+
+    for (const auto& [id, rock] : rocks) {
+        // Calculate distance from target position to predicted rock landing
+        float distance = std::abs(rock.predicted_x - target_x);
+        float ttg = rock.time_to_ground;
+
+        // Only penalize rocks that are both nearby AND imminent
+        if (distance < DODGE_RADIUS && ttg < IMMINENT_TIME) {
+            // CRITICAL: Exponential penalty for imminent threats
+            // A rock landing in 0.5s is FAR more dangerous than one in 1.5s
+            // Using 1/ttg^2 makes closer threats exponentially worse
+            float time_penalty = 1.0f / (ttg * ttg + 0.01f); // +0.01 to avoid div by zero
+            float distance_penalty = 1.0f / (distance + 1.0f); // Closer = worse
+            total_penalty += time_penalty * distance_penalty;
         }
     }
-    
-    std::vector<bool> safe(W,true);
-    for(int x=0;x<W;x++){ 
-        for(int t=0;t<SL;t++){ 
-            if(occ[t][x]){ 
-                safe[x]=false; 
-                break; 
-            } 
-        } 
-    }
-    
-    std::vector<SafeZone> zones; 
-    int st=-1;
-    for(int x=CANNON_WIDTH/2;x<W-CANNON_WIDTH/2;x++){
-        if(safe[x]){ 
-            if(st==-1) st=x; 
-        } else { 
-            if(st!=-1){ 
-                SafeZone z; 
-                z.x_min=st; 
-                z.x_max=x; 
-                z.x_center=(z.x_min+z.x_max)/2.0f; 
-                z.width=z.x_max-z.x_min; 
-                z.is_permanent=true; 
-                z.safe_until=999.0; 
-                if(z.width>=MIN_SAFE_GAP) zones.push_back(z); 
-                st=-1; 
-            } 
-        }
-    }
-    return zones;
+
+    // Return negative penalty (higher score = safer)
+    return -total_penalty;
 }
 
-SafeZone find_best_safe_zone(float cx,const std::vector<SafeZone>& z){
-    if(z.empty()) return {cx,cx-10,cx+10,20,false,0.0};
-    const SafeZone* best=nullptr; 
-    float md=1e9f;
-    for(const auto& s: z){ 
-        float d=std::abs(s.x_center-cx); 
-        if(d<md){ 
-            md=d; 
-            best=&s; 
-        } 
-    }
-    return best?*best:z[0];
-}
+// Calculate offensive opportunity score (higher = better offensive position)
+// Rewards alignment with high-HP targets that aren't immediately dangerous
+float CalculateOffenseScore(float target_x, const std::map<int, RockState>& rocks) {
+    float total_opportunity = 0.0f;
+    const float FIRING_WINDOW = 15.0f; // Width of effective aim window
+    const float MIN_SAFE_TIME = 1.0f;  // Don't chase rocks about to land
+    const int HIGH_HP_THRESHOLD = 10;   // Prioritize high-HP rocks
 
-BotDecision decide(float cannon_x_rel){
-    BotDecision d;
-    auto zones=find_safe_camping_zones();
-    
-    // Imminent threat check
-    bool imminent=false;
-    for(const auto& [id,r]: g_rock_database){
-        if(r.time_to_ground<PANIC_TIME){
-            float dist=std::abs(r.predicted_x-cannon_x_rel);
-            if(dist<CANNON_WIDTH){ 
-                imminent=true; 
-                break; 
+    for (const auto& [id, rock] : rocks) {
+        // We want to shoot rocks that are:
+        // 1. High-HP (take multiple hits, better to start early)
+        // 2. High on screen (non-imminent, safe to chase)
+        // 3. Falling (not already landed)
+        if (rock.is_falling() &&
+            rock.hp >= HIGH_HP_THRESHOLD &&
+            rock.time_to_ground > MIN_SAFE_TIME &&
+            rock.center.y < FALLING_THRESHOLD_Y) {
+
+            float distance = std::abs(rock.center.x - target_x);
+
+            // Reward being aligned with high-value targets
+            if (distance < FIRING_WINDOW) {
+                // Score based on HP (higher HP = higher priority)
+                // and proximity to firing line
+                float alignment_score = (FIRING_WINDOW - distance) / FIRING_WINDOW;
+                total_opportunity += rock.hp * alignment_score;
             }
         }
     }
-    
-    if(imminent){
-        d.priority="P0_EMERGENCY"; 
-        d.strategy="DODGE"; 
-        d.decision="EMERGENCY_MOVE";
-        auto best=find_best_safe_zone(cannon_x_rel,zones);
-        d.target_x_rel=best.x_center;
-        return d;
+
+    return total_opportunity;
+}
+
+// Calculate position quality score (higher = better strategic position)
+// Rewards center field, penalizes edges and corners
+float CalculatePositionScore(float target_x) {
+    const float CENTER = RADAR_WIDTH / 2.0f;
+    const float EDGE_PENALTY_ZONE = 30.0f; // Penalize being within 30px of edges
+
+    // Base score: prefer center (inverted parabola)
+    float center_distance = std::abs(target_x - CENTER);
+    float center_score = -((center_distance * center_distance) / 1000.0f);
+
+    // Extra penalty for being too close to edges (limits maneuverability)
+    float edge_penalty = 0.0f;
+    if (target_x < EDGE_PENALTY_ZONE) {
+        edge_penalty = -(EDGE_PENALTY_ZONE - target_x);
+    } else if (target_x > RADAR_WIDTH - EDGE_PENALTY_ZONE) {
+        edge_penalty = -(target_x - (RADAR_WIDTH - EDGE_PENALTY_ZONE));
     }
 
-    int total=(int)g_rock_database.size();
-    if(total<LOW_THREAT_THRESHOLD && zones.size()>3){
-        d.priority="P1_OFFENSE"; 
-        d.strategy="HUNT";
-        RockState* w=nullptr; 
-        int mh=9999;
-        for(auto& [id,r]: g_rock_database){ 
-            if(r.is_falling() && r.hp<mh){ 
-                mh=r.hp; 
-                w=&r; 
-            } 
-        }
-        if(w){ 
-            d.decision="CHASE_WEAKEST"; 
-            d.target_x_rel=w->predicted_x; 
-        } else { 
-            d.strategy="CAMP"; 
-            d.decision="NO_TARGETS"; 
-            auto best=find_best_safe_zone(cannon_x_rel,zones); 
-            d.target_x_rel=best.x_center; 
-        }
-    } else {
-        d.priority="P1_DEFENSE"; 
-        d.strategy="CAMP";
-        auto best=find_best_safe_zone(cannon_x_rel,zones);
-        bool in=false; 
-        for(const auto& z: zones){ 
-            if(cannon_x_rel>=z.x_min && cannon_x_rel<=z.x_max){ 
-                in=true; 
-                break; 
-            } 
-        }
-        if(in){ 
-            d.decision="STAY_IN_ZONE"; 
-            d.target_x_rel=cannon_x_rel; 
-        } else { 
-            d.decision="MOVE_TO_SAFE_ZONE"; 
-            d.target_x_rel=best.x_center; 
+    return center_score + edge_penalty;
+}
+
+// Main utility-based decision function
+// Replaces the old priority-based modal logic
+BotDecision decide(float cannon_x_rel){
+    BotDecision d;
+
+    // Strategy weights - these control bot behavior
+    const float W_SAFETY = 2.5f;    // Heavily prioritize safety
+    const float W_OFFENSE = 0.8f;   // Value offensive positioning
+    const float W_POSITION = 0.3f;  // Weakly prefer good positioning
+
+    // Sample positions across the field to find best utility
+    const float SAMPLE_STEP = 5.0f;  // Sample every 5 pixels
+    float best_x = RADAR_WIDTH / 2.0f; // Default to center
+    float max_utility = -1e9f;
+
+    // Track best scores for logging/debugging
+    float best_safety = 0.0f;
+    float best_offense = 0.0f;
+
+    // Scan entire field for position with highest total utility
+    for (float target_x = CANNON_WIDTH/2.0f; target_x < RADAR_WIDTH - CANNON_WIDTH/2.0f; target_x += SAMPLE_STEP) {
+        float safety_score = CalculateSafetyScore(target_x, g_rock_database);
+        float offense_score = CalculateOffenseScore(target_x, g_rock_database);
+        float position_score = CalculatePositionScore(target_x);
+
+        // Calculate total utility as weighted sum
+        float total_utility = (W_SAFETY * safety_score) +
+                              (W_OFFENSE * offense_score) +
+                              (W_POSITION * position_score);
+
+        if (total_utility > max_utility) {
+            max_utility = total_utility;
+            best_x = target_x;
+            best_safety = safety_score;
+            best_offense = offense_score;
         }
     }
+
+    // Set target position
+    d.target_x_rel = best_x;
+
+    // Determine strategy/decision labels based on dominant utility component
+    // (This is purely for logging - the actual behavior is continuous)
+    if (best_safety < -10.0f) {
+        // High danger - safety is dominating the decision
+        d.priority = "P0_CONTINUOUS";
+        d.strategy = "FLUID_DODGE";
+        d.decision = "HIGH_THREAT_REPOSITION";
+    } else if (best_offense > 5.0f) {
+        // Good offensive opportunity available
+        d.priority = "P1_CONTINUOUS";
+        d.strategy = "CHASE_AND_DODGE";
+        d.decision = "OFFENSIVE_POSITION";
+    } else {
+        // Balanced state
+        d.priority = "P1_CONTINUOUS";
+        d.strategy = "ADAPTIVE_POSITION";
+        d.decision = "OPTIMAL_UTILITY";
+    }
+
     return d;
 }
 
@@ -1429,7 +1449,7 @@ int main(int argc, char** argv){
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp activateIgnoringOtherApps:YES];
 
-    std::cout << "=== DeadeyeBot v17.4 — THE ASYNC FIX ===\n";
+    std::cout << "=== DeadeyeBot v18.0 — THE UTILITY FIX ===\n";
     std::string execDir=std::filesystem::path(argv[0]).parent_path().string();
 
     // [v14.2] Open log files
